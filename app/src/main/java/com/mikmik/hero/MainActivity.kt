@@ -519,7 +519,7 @@ class MainActivity : ComponentActivity(), LocationListener {
                                                     element.hasAttribute('@click') ||
                                                     element.onclick) return true;
                                                 
-                                                // Check for known class names that indicate clickability
+                                                // Check  d for known class names that indicate clickability
                                                 const classList = Array.from(element.classList);
                                                 if (classList.some(cls => 
                                                     cls.includes('btn') || 
