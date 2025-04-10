@@ -1,15 +1,20 @@
 package com.mikmik.hero
 
-import android.R
+import android.app.NotificationManager
+import android.content.Context
+import androidx.core.app.NotificationCompat
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.sse.EventSource
 import okhttp3.sse.EventSourceListener
+import okhttp3.sse.EventSources
+import org.json.JSONArray
 
-class SSEService {
+class SSEService(private val context: Context? = null) {
 
     private val client = OkHttpClient()
+    private var eventSource: EventSource? = null
 
     fun connectSSE(driverId: String) {
         val request = Request.Builder()
@@ -46,27 +51,29 @@ class SSEService {
         }
 
         // Start the SSE connection
-        val eventSource = EventSource.Factory().newEventSource(request, eventSourceListener)
+        eventSource = EventSources.createFactory(client).newEventSource(request, eventSourceListener)
     }
 
     private fun handleNewOrders(data: String) {
         // Parse the JSON data and show a notification if there are pending orders
         // Example: [{"order_id": "1", "user_id": "100", "assignment_time": "2025-04-10"}]
         val orders = parseOrdersFromJson(data)
-        if (orders.isNotEmpty()) {
+        if (orders.isNotEmpty() && context != null) {
             sendNotification("You have new pending orders")
         }
     }
 
     private fun sendNotification(message: String) {
-        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        val builder = NotificationCompat.Builder(context, "order_notifications")
-            .setSmallIcon(R.drawable.ic_dialog_info)
-            .setContentTitle("New Pending Orders")
-            .setContentText(message)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
+        context?.let { ctx ->
+            val notificationManager = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            val builder = NotificationCompat.Builder(ctx, "order_notifications")
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setContentTitle("New Pending Orders")
+                .setContentText(message)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
 
-        notificationManager.notify(1, builder.build())
+            notificationManager.notify(1, builder.build())
+        }
     }
 
     private fun parseOrdersFromJson(data: String): List<Order> {
@@ -90,7 +97,7 @@ class SSEService {
     }
 
     fun close() {
-        TODO("Not yet implemented")
+        eventSource?.cancel()
     }
 }
 

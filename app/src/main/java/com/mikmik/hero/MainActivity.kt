@@ -2,6 +2,8 @@ package com.mikmik.hero
 
 import android.Manifest
 import android.app.AlertDialog
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -118,7 +120,19 @@ class MainActivity : ComponentActivity(), LocationListener {
         connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
         // Initialize SSE Service
-        sseService = SSEService()
+        sseService = SSEService(this)
+
+        // Create notification channel for Android 8.0+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channelId = "order_notifications"
+            val channel = NotificationChannel(
+                channelId,
+                "Order Notifications",
+                NotificationManager.IMPORTANCE_HIGH
+            )
+            val notificationManager = getSystemService(NotificationManager::class.java)
+            notificationManager.createNotificationChannel(channel)
+        }
 
         // Register network callback
         val networkRequest = NetworkRequest.Builder()
@@ -416,7 +430,7 @@ class MainActivity : ComponentActivity(), LocationListener {
 
         // Close the SSE connection
         if (this::sseService.isInitialized) {
-            sseService.close() // Assuming SSEService has a close method; adjust as needed
+            sseService.close()
         }
 
         // Clean up resources
