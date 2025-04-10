@@ -2,6 +2,7 @@ package com.mikmik.hero
 
 import android.app.NotificationManager
 import android.content.Context
+import android.webkit.CookieManager
 import androidx.core.app.NotificationCompat
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -17,8 +18,21 @@ class SSEService(private val context: Context? = null) {
     private var eventSource: EventSource? = null
 
     fun connectSSE(driverId: String) {
+        // First try to get driver_id from cookies
+        val cookieManager = CookieManager.getInstance()
+        val cookieDriverId = getCookieValue(cookieManager.getCookie("https://mikmik.site"), "driver_id")
+
+        // Use cookie driver_id if exists, otherwise use the parameter
+        val finalDriverId = cookieDriverId ?: driverId
+
+        // If no driver ID was found (neither in cookie nor parameter), don't connect
+        if (finalDriverId.isEmpty()) {
+            println("No driver_id available, not connecting to SSE")
+            return
+        }
+
         val request = Request.Builder()
-            .url("https://mikmik.site/heroes/sse_endpoint.php?driver_id=$driverId")
+            .url("https://mikmik.site/heroes/sse_endpoint.php?driver_id=$finalDriverId")
             .build()
 
         val eventSourceListener = object : EventSourceListener() {
@@ -52,6 +66,20 @@ class SSEService(private val context: Context? = null) {
 
         // Start the SSE connection
         eventSource = EventSources.createFactory(client).newEventSource(request, eventSourceListener)
+    }
+
+    // Helper function to extract specific cookie value
+    private fun getCookieValue(cookieString: String?, cookieName: String): String? {
+        if (cookieString == null) return null
+
+        val cookies = cookieString.split(";")
+        for (cookie in cookies) {
+            val parts = cookie.trim().split("=")
+            if (parts.size == 2 && parts[0] == cookieName) {
+                return parts[1]
+            }
+        }
+        return null
     }
 
     private fun handleNewOrders(data: String) {
