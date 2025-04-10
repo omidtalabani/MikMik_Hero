@@ -88,6 +88,10 @@ class SSEService {
         }
         return orders
     }
+
+    fun close() {
+        TODO("Not yet implemented")
+    }
 }
 
 data class Order(
