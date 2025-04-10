@@ -54,6 +54,7 @@ import com.mikmik.hero.ui.theme.MikMikDeliveryTheme
 class MainActivity : ComponentActivity(), LocationListener {
     private lateinit var locationManager: LocationManager
     private lateinit var connectivityManager: ConnectivityManager
+    private lateinit var sseService: SSEService  // Added SSEService property
     private var webViewId = 100001 // Custom ID for finding WebView
     private var gpsDialogShowing = false
     private var internetDialogShowing = false
@@ -88,6 +89,11 @@ class MainActivity : ComponentActivity(), LocationListener {
                 // If GPS is also enabled and we were showing a dialog, proceed
                 if (isGpsEnabled() && (gpsDialogShowing || internetDialogShowing)) {
                     continueAppFlow()
+
+                    // Connect to SSE when network becomes available
+                    if (this@MainActivity::sseService.isInitialized) {
+                        sseService.connectSSE("driver_id_example")
+                    }
                 }
             }
         }
@@ -111,6 +117,9 @@ class MainActivity : ComponentActivity(), LocationListener {
         locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
         connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
+        // Initialize SSE Service
+        sseService = SSEService()
+
         // Register network callback
         val networkRequest = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
@@ -128,6 +137,9 @@ class MainActivity : ComponentActivity(), LocationListener {
         } else {
             // Both are enabled, continue with normal app flow
             continueAppFlow()
+
+            // Connect to SSE when both GPS and internet are enabled
+            sseService.connectSSE("driver_id_example")
         }
     }
 
@@ -270,6 +282,9 @@ class MainActivity : ComponentActivity(), LocationListener {
                                 showSplash.value = false
                                 // Start location updates
                                 startLocationUpdates()
+
+                                // Connect to SSE after splash screen completes
+                                sseService.connectSSE("driver_id_example")
                             } else {
                                 // If permissions not granted, start permission activity
                                 startActivity(Intent(this, PermissionActivity::class.java))
@@ -285,6 +300,9 @@ class MainActivity : ComponentActivity(), LocationListener {
             // If coming back from permission activity, start location updates
             if (skipSplash) {
                 startLocationUpdates()
+
+                // Connect to SSE when skipping splash
+                sseService.connectSSE("driver_id_example")
             }
         }
     }
@@ -395,6 +413,11 @@ class MainActivity : ComponentActivity(), LocationListener {
         // Dismiss any open dialogs
         dismissGpsDialog()
         dismissInternetDialog()
+
+        // Close the SSE connection
+        if (this::sseService.isInitialized) {
+            sseService.close() // Assuming SSEService has a close method; adjust as needed
+        }
 
         // Clean up resources
         if (this::locationManager.isInitialized) {

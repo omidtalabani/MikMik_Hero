@@ -48,7 +48,7 @@ dependencies {
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
-
+    implementation ("com.squareup.okhttp3:okhttp:4.10.0")
     // Add SwipeRefresh for Compose
     implementation("com.google.accompanist:accompanist-swiperefresh:0.32.0")
 
