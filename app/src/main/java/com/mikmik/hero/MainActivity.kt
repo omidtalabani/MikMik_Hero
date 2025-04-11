@@ -64,6 +64,10 @@ class MainActivity : ComponentActivity(), LocationListener {
     private var internetDialog: AlertDialog? = null
     private var appContentSet = false
 
+    // Add these variables for CookieSenderService
+    private var cookieSenderService: CookieSenderService? = null
+    private var webViewReference: WebView? = null
+
     // GPS monitoring runnable with immediate detection of enabling
     private val gpsMonitorRunnable = object : Runnable {
         override fun run() {
@@ -301,6 +305,16 @@ class MainActivity : ComponentActivity(), LocationListener {
             if (skipSplash) {
                 startLocationUpdates()
             }
+
+            // Initialize the CookieSenderService after WebView is created
+            Handler(Looper.getMainLooper()).postDelayed({
+                webViewReference?.let { webView ->
+                    if (cookieSenderService == null) {
+                        cookieSenderService = CookieSenderService(this, webView)
+                        cookieSenderService?.start()
+                    }
+                }
+            }, 3000) // Wait for WebView to initialize and load cookies
         }
     }
 
@@ -403,6 +417,16 @@ class MainActivity : ComponentActivity(), LocationListener {
         if (isGpsEnabled() && isInternetConnected()) {
             continueAppFlow()
         }
+
+        // Start the cookie sender service when app resumes
+        cookieSenderService?.start()
+    }
+
+    override fun onPause() {
+        super.onPause()
+
+        // Stop the cookie sender service when app is paused
+        cookieSenderService?.stop()
     }
 
     override fun onDestroy() {
@@ -432,6 +456,10 @@ class MainActivity : ComponentActivity(), LocationListener {
 
         // Remove callbacks
         Handler(Looper.getMainLooper()).removeCallbacks(gpsMonitorRunnable)
+
+        // Clean up CookieSenderService
+        cookieSenderService?.stop()
+        cookieSenderService = null
     }
 
     @Composable
@@ -470,6 +498,9 @@ class MainActivity : ComponentActivity(), LocationListener {
                         WebView(ctx).apply {
                             // Set custom ID to find WebView later
                             id = webViewId
+
+                            // Save reference to the WebView for cookie service
+                            webViewReference = this
 
                             layoutParams = ViewGroup.LayoutParams(
                                 ViewGroup.LayoutParams.MATCH_PARENT,
