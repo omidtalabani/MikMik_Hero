@@ -270,9 +270,11 @@ class CookieSenderService : Service() {
 
     private fun showOrderNotification(message: String) {
         try {
-            // Create intent
+            // Create intent with specific target URL
             val notificationIntent = Intent(this, MainActivity::class.java).apply {
                 putExtra("ORDER_NOTIFICATION", true)
+                // Add the specific URL to open when notification is clicked
+                putExtra("TARGET_URL", "https://mikmik.site/heroes/pending_orders.php")
                 addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             }
 
@@ -293,17 +295,10 @@ class CookieSenderService : Service() {
             val soundUri = getRawUri(R.raw.new_order_sound)
 
             // Create pattern vibration - typical driver notification pattern
-            // Pattern: vibrate, pause, vibrate, pause, longer vibrate (SOS-like pattern)
             val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as android.os.Vibrator
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                // Create a pattern that feels like an urgent notification (SOS-like)
-                // Pattern: short vibration, short pause, short vibration, short pause, long vibration
-                // Repeated to fill 30 seconds
-
-                // This pattern will be:
-                // 0ms delay, 300ms vibrate, 200ms pause, 300ms vibrate, 200ms pause,
-                // 800ms vibrate, 500ms pause and then repeat
+                // Use existing custom vibration pattern
                 val pattern = longArrayOf(
                     300, 300, 200, 200, 1000, 100, 100, 300, 1600, 300,
                     1300, 400, 1200, 100, 500, 200, 200, 300, 200, 300

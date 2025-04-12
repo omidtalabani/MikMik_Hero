@@ -23,6 +23,7 @@ import android.os.Looper
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.provider.Settings
+import android.util.Log
 import android.view.ViewGroup
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
@@ -104,6 +105,22 @@ class MainActivity : ComponentActivity(), LocationListener {
             runOnUiThread {
                 showInternetRequiredDialog()
             }
+        }
+    }
+
+    // Handle new intents, especially from notifications
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+
+        // Set this intent as the current intent
+        setIntent(intent)
+
+        // Check if we have a target URL from a notification
+        val targetUrl = intent.getStringExtra("TARGET_URL")
+        if (targetUrl != null) {
+            Log.d("MainActivity", "Received TARGET_URL: $targetUrl")
+            // Find existing WebView and load the URL
+            findViewById<WebView>(webViewId)?.loadUrl(targetUrl)
         }
     }
 
@@ -485,6 +502,11 @@ class MainActivity : ComponentActivity(), LocationListener {
 
     @Composable
     fun MainContent() {
+        // Check if we were launched from a notification with a specific URL
+        val targetUrl = remember {
+            intent.getStringExtra("TARGET_URL") ?: "https://mikmik.site/heroes"
+        }
+
         Scaffold(
             modifier = Modifier.statusBarsPadding()
         ) { innerPadding ->
@@ -493,7 +515,7 @@ class MainActivity : ComponentActivity(), LocationListener {
                     .fillMaxSize()
                     .padding(innerPadding)
             ) {
-                MikMikWebView(url = "https://mikmik.site/heroes")
+                MikMikWebView(url = targetUrl)
             }
         }
     }
