@@ -64,8 +64,7 @@ class MainActivity : ComponentActivity(), LocationListener {
     private var internetDialog: AlertDialog? = null
     private var appContentSet = false
 
-    // Add these variables for CookieSenderService
-    private var cookieSenderService: CookieSenderService? = null
+    // Only keep the WebView reference for background service
     private var webViewReference: WebView? = null
 
     // GPS monitoring runnable with immediate detection of enabling
@@ -105,6 +104,37 @@ class MainActivity : ComponentActivity(), LocationListener {
             runOnUiThread {
                 showInternetRequiredDialog()
             }
+        }
+    }
+
+    // Method to start background service
+    private fun startBackgroundService() {
+        // Extract driver_id from WebView cookies and store it in the service
+        webViewReference?.let { webView ->
+            val cookieManager = android.webkit.CookieManager.getInstance()
+            val cookies = cookieManager.getCookie("https://mikmik.site/heroes")
+
+            if (cookies != null) {
+                for (cookie in cookies.split(";")) {
+                    val trimmedCookie = cookie.trim()
+                    if (trimmedCookie.startsWith("driver_id=")) {
+                        val driverId = trimmedCookie.substring("driver_id=".length)
+                        // Set the driver ID in the service
+                        CookieSenderService.setDriverId(driverId)
+                        break
+                    }
+                }
+            }
+        }
+
+        // Start the background service
+        val serviceIntent = Intent(this, CookieSenderService::class.java)
+
+        // On Android 8.0+, start as foreground service
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent)
+        } else {
+            startService(serviceIntent)
         }
     }
 
@@ -306,14 +336,9 @@ class MainActivity : ComponentActivity(), LocationListener {
                 startLocationUpdates()
             }
 
-            // Initialize the CookieSenderService after WebView is created
+            // Start the background service after WebView is created
             Handler(Looper.getMainLooper()).postDelayed({
-                webViewReference?.let { webView ->
-                    if (cookieSenderService == null) {
-                        cookieSenderService = CookieSenderService(this, webView)
-                        cookieSenderService?.start()
-                    }
-                }
+                startBackgroundService()
             }, 3000) // Wait for WebView to initialize and load cookies
         }
     }
@@ -418,15 +443,13 @@ class MainActivity : ComponentActivity(), LocationListener {
             continueAppFlow()
         }
 
-        // Start the cookie sender service when app resumes
-        cookieSenderService?.start()
+        // No need to start the service here, it runs independently
     }
 
     override fun onPause() {
         super.onPause()
 
-        // Stop the cookie sender service when app is paused
-        cookieSenderService?.stop()
+        // No need to stop the service here, it should keep running
     }
 
     override fun onDestroy() {
@@ -457,9 +480,7 @@ class MainActivity : ComponentActivity(), LocationListener {
         // Remove callbacks
         Handler(Looper.getMainLooper()).removeCallbacks(gpsMonitorRunnable)
 
-        // Clean up CookieSenderService
-        cookieSenderService?.stop()
-        cookieSenderService = null
+        // No need to clean up the service, system manages it
     }
 
     @Composable
@@ -499,7 +520,7 @@ class MainActivity : ComponentActivity(), LocationListener {
                             // Set custom ID to find WebView later
                             id = webViewId
 
-                            // Save reference to the WebView for cookie service
+                            // Save reference to the WebView for background service
                             webViewReference = this
 
                             layoutParams = ViewGroup.LayoutParams(
