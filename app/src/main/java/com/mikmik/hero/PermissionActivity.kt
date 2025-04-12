@@ -5,6 +5,7 @@ import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
@@ -29,7 +30,7 @@ class PermissionActivity : ComponentActivity() {
     private var permissionDialogShown = false
 
     // For requesting location permissions
-    private val requestPermissionsLauncher = registerForActivityResult(
+    private val requestLocationPermissionsLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
         if (permissions.entries.any { it.value }) {
@@ -37,7 +38,8 @@ class PermissionActivity : ComponentActivity() {
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
                 requestBackgroundPermission()
             } else {
-                proceedToMainActivity()
+                // On older Android versions, check for notification permission next
+                checkAndRequestNotificationPermission()
             }
         } else {
             // No permissions granted, show explanation
@@ -49,7 +51,15 @@ class PermissionActivity : ComponentActivity() {
     private val requestBackgroundPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted ->
-        // Even if denied, we can still proceed as background is optional
+        // After background permission is handled, check notification permission
+        checkAndRequestNotificationPermission()
+    }
+
+    // For requesting notification permission (Android 13+)
+    private val requestNotificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        // Regardless of notification permission, we can proceed to main activity
         proceedToMainActivity()
     }
 
@@ -94,19 +104,46 @@ class PermissionActivity : ComponentActivity() {
                         this,
                         Manifest.permission.ACCESS_BACKGROUND_LOCATION
                     ) == PackageManager.PERMISSION_GRANTED) {
-                    // All permissions granted
-                    proceedToMainActivity()
+                    // All location permissions granted, check notification permission
+                    checkAndRequestNotificationPermission()
                 } else {
                     // Request background location
                     requestBackgroundPermission()
                 }
             } else {
-                // On Android 9 and below, proceed directly
-                proceedToMainActivity()
+                // On Android 9 and below, proceed to notification permission
+                checkAndRequestNotificationPermission()
             }
         } else {
             // Need to request foreground location permissions
-            requestPermissionsLauncher.launch(foregroundPermissions)
+            requestLocationPermissionsLauncher.launch(foregroundPermissions)
+        }
+    }
+
+    private fun checkAndRequestNotificationPermission() {
+        // Only need runtime permission for Android 13+ (TIRAMISU)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) != PackageManager.PERMISSION_GRANTED) {
+
+                // Show explanation first
+                AlertDialog.Builder(this)
+                    .setTitle("Notification Permission")
+                    .setMessage("MikMik Hero needs notification permission to alert you about new orders. Please grant notification access to ensure you don't miss any orders.")
+                    .setPositiveButton("Continue") { _, _ ->
+                        requestNotificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                    .setCancelable(false)
+                    .show()
+            } else {
+                // Already granted, proceed
+                proceedToMainActivity()
+            }
+        } else {
+            // On Android 12 and below, no runtime permission needed
+            proceedToMainActivity()
         }
     }
 
@@ -166,7 +203,7 @@ fun PermissionScreen(onRequestPermission: () -> Unit) {
             modifier = Modifier.padding(32.dp)
         ) {
             Text(
-                text = "Location Permission Required",
+                text = "Permissions Required",
                 fontSize = 24.sp,
                 fontWeight = FontWeight.Bold,
                 color = Color.White,
@@ -176,7 +213,7 @@ fun PermissionScreen(onRequestPermission: () -> Unit) {
             Spacer(modifier = Modifier.height(16.dp))
 
             Text(
-                text = "MikMik Hero needs location permission to track deliveries and provide optimal service.",
+                text = "MikMik Hero needs location and notification permissions to track deliveries and alert you about new orders.",
                 fontSize = 18.sp,
                 color = Color.White,
                 textAlign = TextAlign.Center
@@ -191,7 +228,7 @@ fun PermissionScreen(onRequestPermission: () -> Unit) {
                     .padding(8.dp)
             ) {
                 Text(
-                    text = "Grant Permission",
+                    text = "Grant Permissions",
                     fontSize = 18.sp
                 )
             }
