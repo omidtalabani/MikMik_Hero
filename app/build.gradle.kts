@@ -2,6 +2,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.google.services) // Add this line for Google Services plugin
 }
 
 android {
@@ -53,6 +54,11 @@ dependencies {
     implementation ("com.onesignal:OneSignal:[5.0.0, 5.99.99]")
     // Add SwipeRefresh for Compose
     implementation("com.google.accompanist:accompanist-swiperefresh:0.32.0")
+
+    // Add Firebase dependencies
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.messaging)
+    implementation(libs.firebase.analytics)
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
