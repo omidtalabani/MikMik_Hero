@@ -1,5 +1,6 @@
 package com.mikmik.hero
 
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -16,6 +17,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 import android.util.Log
 import android.webkit.CookieManager
 import android.widget.Toast
@@ -43,6 +45,7 @@ class CookieSenderService : Service() {
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "order_check_service"
         private const val ORDER_CHANNEL_ID = "order_notifications"
+        private const val RESTART_SERVICE_ALARM_ID = 12345
         private var driverId: String? = null
 
         // Method to cache driver ID from MainActivity
@@ -58,12 +61,20 @@ class CookieSenderService : Service() {
 
             if (cachedDriverId != null) {
                 checkPendingOrders(cachedDriverId)
+
+                // Store driver ID in shared preferences for recovery
+                val prefs = applicationContext.getSharedPreferences("MikMikPrefs", Context.MODE_PRIVATE)
+                prefs.edit().putString("driver_id", cachedDriverId).apply()
             } else {
                 // If no cached driver ID, try to get it from cookies
                 val newDriverId = getDriverIdCookie()
                 if (newDriverId != null) {
                     driverId = newDriverId
                     checkPendingOrders(newDriverId)
+
+                    // Store driver ID in shared preferences for recovery
+                    val prefs = applicationContext.getSharedPreferences("MikMikPrefs", Context.MODE_PRIVATE)
+                    prefs.edit().putString("driver_id", newDriverId).apply()
                 }
             }
 
@@ -85,6 +96,50 @@ class CookieSenderService : Service() {
             "MikMik:OrderCheckWakeLock"
         )
         wakeLock?.acquire(30 * 60 * 1000L) // 30 minutes max
+
+        // Set up service restart alarm
+        setupServiceRestartAlarm()
+    }
+
+    private fun setupServiceRestartAlarm() {
+        // Intent that will be sent by the AlarmManager
+        val restartIntent = Intent(this, BootCompletedReceiver::class.java).apply {
+            action = "com.mikmik.hero.RESTART_SERVICE"
+        }
+
+        val pendingIntentFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        } else {
+            PendingIntent.FLAG_UPDATE_CURRENT
+        }
+
+        val pendingIntent = PendingIntent.getBroadcast(
+            this,
+            RESTART_SERVICE_ALARM_ID,
+            restartIntent,
+            pendingIntentFlags
+        )
+
+        // Get the alarm manager
+        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+
+        // Set a repeating alarm every 15 minutes to ensure service keeps running
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            alarmManager.setExactAndAllowWhileIdle(
+                AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                SystemClock.elapsedRealtime() + (15 * 60 * 1000), // 15 minutes
+                pendingIntent
+            )
+        } else {
+            alarmManager.setRepeating(
+                AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                SystemClock.elapsedRealtime() + (15 * 60 * 1000), // 15 minutes
+                15 * 60 * 1000, // Repeat every 15 minutes
+                pendingIntent
+            )
+        }
+
+        Log.d("CookieSenderService", "Service restart alarm set")
     }
 
     private fun createNotificationChannels() {
@@ -157,6 +212,16 @@ class CookieSenderService : Service() {
         startForeground(NOTIFICATION_ID, createNotification())
         Log.d("CookieSenderService", "Service started in foreground")
 
+        // Try to recover driver ID from shared preferences if needed
+        if (driverId == null) {
+            val prefs = applicationContext.getSharedPreferences("MikMikPrefs", Context.MODE_PRIVATE)
+            val savedDriverId = prefs.getString("driver_id", null)
+            if (savedDriverId != null) {
+                Log.d("CookieSenderService", "Recovered driver ID from preferences: $savedDriverId")
+                driverId = savedDriverId
+            }
+        }
+
         // Start checking for orders
         handler.post(checkOrdersRunnable)
 
@@ -199,18 +264,45 @@ class CookieSenderService : Service() {
             wakeLock?.release()
         }
 
-        Log.d("CookieSenderService", "Service destroyed")
+        // Try to restart the service if it's being destroyed
+        val restartServiceIntent = Intent(applicationContext, BootCompletedReceiver::class.java).apply {
+            action = "com.mikmik.hero.RESTART_SERVICE"
+        }
+        sendBroadcast(restartServiceIntent)
+
+        Log.d("CookieSenderService", "Service destroyed, attempting restart")
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+
+        // This gets called when the user swipes away the app from recent tasks
+        Log.d("CookieSenderService", "Task removed, ensuring service keeps running")
+
+        // Try to restart the service
+        val restartServiceIntent = Intent(applicationContext, BootCompletedReceiver::class.java).apply {
+            action = "com.mikmik.hero.RESTART_SERVICE"
+        }
+        sendBroadcast(restartServiceIntent)
     }
 
     private fun getDriverIdCookie(): String? {
-        val cookieManager = CookieManager.getInstance()
-        val cookies = cookieManager.getCookie("https://mikmik.site/heroes") ?: return null
+        try {
+            val cookieManager = CookieManager.getInstance()
+            val cookies = cookieManager.getCookie("https://mikmik.site/heroes") ?: return null
 
-        for (cookie in cookies.split(";")) {
-            val trimmedCookie = cookie.trim()
-            if (trimmedCookie.startsWith("driver_id=")) {
-                return trimmedCookie.substring("driver_id=".length)
+            for (cookie in cookies.split(";")) {
+                val trimmedCookie = cookie.trim()
+                if (trimmedCookie.startsWith("driver_id=")) {
+                    return trimmedCookie.substring("driver_id=".length)
+                }
             }
+        } catch (e: Exception) {
+            Log.e("CookieSenderService", "Error getting cookie", e)
+
+            // Try to recover from shared preferences
+            val prefs = applicationContext.getSharedPreferences("MikMikPrefs", Context.MODE_PRIVATE)
+            return prefs.getString("driver_id", null)
         }
         return null
     }

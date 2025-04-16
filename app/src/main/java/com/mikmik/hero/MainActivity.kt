@@ -20,11 +20,16 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.provider.Settings
 import android.util.Log
 import android.view.ViewGroup
+import android.webkit.CookieManager
+import android.webkit.GeolocationPermissions
+import android.webkit.JavascriptInterface
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
@@ -50,8 +55,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
-import com.google.accompanist.swiperefresh.SwipeRefresh
-import com.google.accompanist.swiperefresh.rememberSwipeRefreshState
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import com.mikmik.hero.ui.theme.MikMikDeliveryTheme
 
 class MainActivity : ComponentActivity(), LocationListener {
@@ -68,6 +72,9 @@ class MainActivity : ComponentActivity(), LocationListener {
     // Only keep the WebView reference for background service
     private var webViewReference: WebView? = null
 
+    // Store last known location for providing to the WebView immediately on page load
+    private var lastKnownLocation: Location? = null
+
     // GPS monitoring runnable with immediate detection of enabling
     private val gpsMonitorRunnable = object : Runnable {
         override fun run() {
@@ -82,6 +89,16 @@ class MainActivity : ComponentActivity(), LocationListener {
             }
             // Schedule next check
             Handler(Looper.getMainLooper()).postDelayed(this, 1000) // Check every second for faster response
+        }
+    }
+
+    // Cookie saving runnable to periodically save cookies
+    private val cookieSavingRunnable = object : Runnable {
+        override fun run() {
+            saveCookiesToPreferences()
+
+            // Schedule next run
+            Handler(Looper.getMainLooper()).postDelayed(this, 60000) // Check every minute
         }
     }
 
@@ -126,22 +143,45 @@ class MainActivity : ComponentActivity(), LocationListener {
 
     // Method to start background service
     private fun startBackgroundService() {
-        // Extract driver_id from WebView cookies and store it in the service
+        // First try to get driver_id from WebView cookies
+        var foundDriverId: String? = null
+
+        // Method 1: Get from WebView reference
         webViewReference?.let { webView ->
-            val cookieManager = android.webkit.CookieManager.getInstance()
+            val cookieManager = CookieManager.getInstance()
             val cookies = cookieManager.getCookie("https://mikmik.site/heroes")
 
             if (cookies != null) {
                 for (cookie in cookies.split(";")) {
                     val trimmedCookie = cookie.trim()
                     if (trimmedCookie.startsWith("driver_id=")) {
-                        val driverId = trimmedCookie.substring("driver_id=".length)
-                        // Set the driver ID in the service
-                        CookieSenderService.setDriverId(driverId)
+                        foundDriverId = trimmedCookie.substring("driver_id=".length)
+                        Log.d("MainActivity", "Found driver_id from WebView cookies: $foundDriverId")
                         break
                     }
                 }
             }
+        }
+
+        // Method 2: If not found in WebView, try to get from SharedPreferences
+        if (foundDriverId == null) {
+            val prefs = getSharedPreferences("MikMikPrefs", Context.MODE_PRIVATE)
+            foundDriverId = prefs.getString("driver_id", null)
+            Log.d("MainActivity", "Retrieved driver_id from SharedPreferences: $foundDriverId")
+        }
+
+        // If found by any method, save both to service and SharedPreferences
+        if (foundDriverId != null) {
+            // Set the driver ID in the service
+            CookieSenderService.setDriverId(foundDriverId)
+
+            // And save to SharedPreferences for persistence across app restarts
+            val prefs = getSharedPreferences("MikMikPrefs", Context.MODE_PRIVATE)
+            prefs.edit().putString("driver_id", foundDriverId).apply()
+
+            Log.d("MainActivity", "Driver ID saved to service and preferences: $foundDriverId")
+        } else {
+            Log.e("MainActivity", "Could not find driver_id in cookies or SharedPreferences")
         }
 
         // Start the background service
@@ -155,11 +195,93 @@ class MainActivity : ComponentActivity(), LocationListener {
         }
     }
 
+    // Save cookies to SharedPreferences
+    private fun saveCookiesToPreferences() {
+        webViewReference?.let { webView ->
+            val cookieManager = CookieManager.getInstance()
+            val cookies = cookieManager.getCookie("https://mikmik.site/heroes")
+
+            if (cookies != null) {
+                // Save the entire cookie string
+                val prefs = getSharedPreferences("MikMikPrefs", Context.MODE_PRIVATE)
+                prefs.edit().putString("saved_cookies", cookies).apply()
+
+                // Also extract and save driver_id separately
+                for (cookie in cookies.split(";")) {
+                    val trimmedCookie = cookie.trim()
+                    if (trimmedCookie.startsWith("driver_id=")) {
+                        val driverId = trimmedCookie.substring("driver_id=".length)
+                        prefs.edit().putString("driver_id", driverId).apply()
+                        Log.d("MainActivity", "Saved driver_id to preferences: $driverId")
+                        break
+                    }
+                }
+            }
+        }
+    }
+
+    // Restore cookies from SharedPreferences when app starts
+    private fun restoreCookiesFromPreferences() {
+        val prefs = getSharedPreferences("MikMikPrefs", Context.MODE_PRIVATE)
+        val savedCookies = prefs.getString("saved_cookies", null)
+
+        if (savedCookies != null) {
+            Log.d("MainActivity", "Restoring cookies from preferences")
+            val cookieManager = CookieManager.getInstance()
+
+            // Clear existing cookies first
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                cookieManager.removeAllCookies(null)
+                cookieManager.flush()
+            } else {
+                @Suppress("DEPRECATION")
+                cookieManager.removeAllCookie()
+                @Suppress("DEPRECATION")
+                cookieManager.removeSessionCookie()
+            }
+
+            // Add each cookie back
+            for (cookiePair in savedCookies.split(";")) {
+                val trimmedCookie = cookiePair.trim()
+                if (trimmedCookie.isNotEmpty()) {
+                    // Set the cookie
+                    cookieManager.setCookie("https://mikmik.site/heroes", trimmedCookie)
+                    Log.d("MainActivity", "Restored cookie: $trimmedCookie")
+                }
+            }
+
+            // Force cookies to be written to disk
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                cookieManager.flush()
+            }
+        }
+    }
+
+    private fun requestBatteryOptimizationExemption() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+            val packageName = packageName
+            if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
+                try {
+                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = Uri.parse("package:$packageName")
+                    }
+                    startActivity(intent)
+                } catch (e: Exception) {
+                    Log.e("MainActivity", "Failed to request battery optimization exemption", e)
+                }
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         // Configure window to respect system windows like the status bar
         WindowCompat.setDecorFitsSystemWindows(window, false)
+
+        // Restore cookies before anything else
+        restoreCookiesFromPreferences()
 
         // Initialize system services
         locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
@@ -177,6 +299,9 @@ class MainActivity : ComponentActivity(), LocationListener {
             notificationManager.createNotificationChannel(channel)
         }
 
+        // Request battery optimization exemption
+        requestBatteryOptimizationExemption()
+
         // Register network callback
         val networkRequest = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
@@ -185,6 +310,9 @@ class MainActivity : ComponentActivity(), LocationListener {
 
         // Start GPS monitoring with faster checks (every second)
         Handler(Looper.getMainLooper()).post(gpsMonitorRunnable)
+
+        // Start cookie saving task
+        Handler(Looper.getMainLooper()).post(cookieSavingRunnable)
 
         // First check if GPS and internet are enabled
         if (!isGpsEnabled()) {
@@ -390,6 +518,20 @@ class MainActivity : ComponentActivity(), LocationListener {
                             10f,  // Or when moved 10 meters
                             this
                         )
+
+                        // Try to get last known location immediately
+                        try {
+                            val lastLocation = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+                            if (lastLocation != null) {
+                                lastKnownLocation = lastLocation
+                                // If WebView is already created, send location immediately
+                                webViewReference?.let { webView ->
+                                    sendLocationToWebView(webView, lastLocation)
+                                }
+                            }
+                        } catch (e: SecurityException) {
+                            Log.e("MainActivity", "Error getting last known location", e)
+                        }
                     }
                 }
 
@@ -410,6 +552,22 @@ class MainActivity : ComponentActivity(), LocationListener {
                             10f,
                             this
                         )
+
+                        // If no GPS location yet, try network provider
+                        if (lastKnownLocation == null) {
+                            try {
+                                val lastLocation = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+                                if (lastLocation != null) {
+                                    lastKnownLocation = lastLocation
+                                    // If WebView is already created, send location immediately
+                                    webViewReference?.let { webView ->
+                                        sendLocationToWebView(webView, lastLocation)
+                                    }
+                                }
+                            } catch (e: SecurityException) {
+                                Log.e("MainActivity", "Error getting last known location from network", e)
+                            }
+                        }
                     }
                 }
             }
@@ -421,16 +579,35 @@ class MainActivity : ComponentActivity(), LocationListener {
         }
     }
 
+    // Helper method to send location to WebView
+    private fun sendLocationToWebView(webView: WebView, location: Location) {
+        val latitude = location.latitude
+        val longitude = location.longitude
+
+        // Log the location update
+        Log.d("MainActivity", "Sending location to WebView: $latitude, $longitude")
+
+        webView.evaluateJavascript(
+            "javascript:updateLocation($latitude, $longitude)",
+            null
+        )
+    }
+
     // LocationListener implementation
     override fun onLocationChanged(location: Location) {
         val latitude = location.latitude
         val longitude = location.longitude
 
+        // Save as last known location
+        lastKnownLocation = location
+
+        // Log the location update
+        Log.d("MainActivity", "Location updated: $latitude, $longitude")
+
         // Find WebView and inject location data
-        findViewById<WebView>(webViewId)?.evaluateJavascript(
-            "javascript:updateLocation($latitude, $longitude)",
-            null
-        )
+        findViewById<WebView>(webViewId)?.let { webView ->
+            sendLocationToWebView(webView, location)
+        }
     }
 
     // Required by LocationListener interface
@@ -459,14 +636,13 @@ class MainActivity : ComponentActivity(), LocationListener {
         if (isGpsEnabled() && isInternetConnected()) {
             continueAppFlow()
         }
-
-        // No need to start the service here, it runs independently
     }
 
     override fun onPause() {
         super.onPause()
 
-        // No need to stop the service here, it should keep running
+        // Save cookies when app is paused
+        saveCookiesToPreferences()
     }
 
     override fun onDestroy() {
@@ -474,6 +650,9 @@ class MainActivity : ComponentActivity(), LocationListener {
         // Dismiss any open dialogs
         dismissGpsDialog()
         dismissInternetDialog()
+
+        // Save cookies before the app is destroyed
+        saveCookiesToPreferences()
 
         // Clean up resources
         if (this::locationManager.isInitialized) {
@@ -496,8 +675,7 @@ class MainActivity : ComponentActivity(), LocationListener {
 
         // Remove callbacks
         Handler(Looper.getMainLooper()).removeCallbacks(gpsMonitorRunnable)
-
-        // No need to clean up the service, system manages it
+        Handler(Looper.getMainLooper()).removeCallbacks(cookieSavingRunnable)
     }
 
     @Composable
@@ -524,21 +702,40 @@ class MainActivity : ComponentActivity(), LocationListener {
     fun MikMikWebView(url: String) {
         var isLoading by remember { mutableStateOf(true) }
         val webViewRef = remember { mutableStateOf<WebView?>(null) }
-        val swipeRefreshState = rememberSwipeRefreshState(isRefreshing = isLoading)
+        val swipeRefreshLayoutRef = remember { mutableStateOf<SwipeRefreshLayout?>(null) }
         val context = LocalContext.current
 
-        SwipeRefresh(
-            state = swipeRefreshState,
-            onRefresh = {
-                performHapticFeedback(context) // Haptic feedback for refresh
-                webViewRef.value?.reload()
-            }
-        ) {
-            Box(modifier = Modifier.fillMaxSize()) {
-                AndroidView(
-                    modifier = Modifier.fillMaxSize(),
-                    factory = { ctx ->
-                        WebView(ctx).apply {
+        // Use AndroidView to host SwipeRefreshLayout with WebView inside
+        Box(modifier = Modifier.fillMaxSize()) {
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { ctx ->
+                    // Create SwipeRefreshLayout
+                    SwipeRefreshLayout(ctx).apply {
+                        layoutParams = ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+
+                        // Save reference to SwipeRefreshLayout
+                        swipeRefreshLayoutRef.value = this
+
+                        // Set refresh listener
+                        setOnRefreshListener {
+                            performHapticFeedback(context)
+                            webViewRef.value?.reload()
+                        }
+
+                        // Customize the SwipeRefreshLayout colors
+                        setColorSchemeResources(
+                            android.R.color.holo_blue_bright,
+                            android.R.color.holo_green_light,
+                            android.R.color.holo_orange_light,
+                            android.R.color.holo_red_light
+                        )
+
+                        // Create WebView and add it to SwipeRefreshLayout
+                        val webView = WebView(ctx).apply {
                             // Set custom ID to find WebView later
                             id = webViewId
 
@@ -550,23 +747,87 @@ class MainActivity : ComponentActivity(), LocationListener {
                                 ViewGroup.LayoutParams.MATCH_PARENT
                             )
 
+                            // Configure CookieManager for persistence
+                            val cookieManager = CookieManager.getInstance()
+                            cookieManager.setAcceptCookie(true)
+                            cookieManager.setAcceptThirdPartyCookies(this, true)
+
+                            // Ensure cookies persist between sessions
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                                cookieManager.flush()
+                            }
+
                             settings.apply {
                                 javaScriptEnabled = true
                                 domStorageEnabled = true
                                 setSupportZoom(true)
                                 cacheMode = WebSettings.LOAD_DEFAULT
                                 databaseEnabled = true
+
+                                // Enable geolocation
+                                setGeolocationEnabled(true)
+
+                                // Set geolocation database path (newer Android versions don't need this)
+                                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+                                    try {
+                                        setGeolocationDatabasePath(ctx.applicationContext.filesDir.path)
+                                    } catch (e: Exception) {
+                                        Log.e("MainActivity", "Error setting geolocation database path", e)
+                                    }
+                                }
+
+                                // Add these settings to ensure persistence
+                                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+                                    @Suppress("DEPRECATION")
+                                    saveFormData = true
+                                }
+
+                                // savePassword was removed in newer versions
+                                try {
+                                    @Suppress("DEPRECATION")
+                                    savePassword = true
+                                } catch (e: Exception) {
+                                    // Ignore if method doesn't exist
+                                }
+
+                                // Use cacheMode instead of setAppCacheEnabled for newer versions
+                                cacheMode = WebSettings.LOAD_DEFAULT
+
+                                // This is critical for cookie persistence
+                                setDomStorageEnabled(true)
                             }
 
                             // Enable haptic feedback
                             setHapticFeedbackEnabled(true)
 
-                            // Add JavaScript interface for haptic feedback
+                            // Add WebChromeClient to handle geolocation permissions
+                            webChromeClient = object : WebChromeClient() {
+                                override fun onGeolocationPermissionsShowPrompt(
+                                    origin: String,
+                                    callback: GeolocationPermissions.Callback
+                                ) {
+                                    // Always grant permission since app already has system location permission
+                                    callback.invoke(origin, true, true)
+                                    Log.d("MainActivity", "WebView geolocation permission granted for: $origin")
+                                }
+                            }
+
+                            // Add JavaScript interface for haptic feedback and location
                             addJavascriptInterface(object {
-                                @android.webkit.JavascriptInterface
+                                @JavascriptInterface
                                 fun onElementClicked(isClickable: Boolean) {
                                     if (isClickable) {
                                         performHapticFeedback(context)
+                                    }
+                                }
+
+                                @JavascriptInterface
+                                fun requestLocationUpdate() {
+                                    // When the page requests a location update explicitly
+                                    lastKnownLocation?.let { location ->
+                                        Handler(Looper.getMainLooper()).post {
+                                            sendLocationToWebView(webViewReference!!, location)
+                                        }
                                     }
                                 }
                             }, "HapticFeedback")
@@ -576,13 +837,31 @@ class MainActivity : ComponentActivity(), LocationListener {
                                 override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                                     super.onPageStarted(view, url, favicon)
                                     isLoading = true
-                                    swipeRefreshState.isRefreshing = true
+
+                                    // Show refresh indicator
+                                    swipeRefreshLayoutRef.value?.post {
+                                        swipeRefreshLayoutRef.value?.isRefreshing = true
+                                    }
                                 }
 
                                 override fun onPageFinished(view: WebView?, url: String?) {
                                     super.onPageFinished(view, url)
                                     isLoading = false
-                                    swipeRefreshState.isRefreshing = false
+
+                                    // Hide refresh indicator
+                                    swipeRefreshLayoutRef.value?.post {
+                                        swipeRefreshLayoutRef.value?.isRefreshing = false
+                                    }
+
+                                    // Save cookies after page loads
+                                    saveCookiesToPreferences()
+
+                                    // Send last known location to WebView if available
+                                    lastKnownLocation?.let { location ->
+                                        view?.let { webView ->
+                                            sendLocationToWebView(webView, location)
+                                        }
+                                    }
 
                                     // Inject JavaScript for clickable detection and location handling
                                     view?.evaluateJavascript("""
@@ -646,7 +925,166 @@ class MainActivity : ComponentActivity(), LocationListener {
                                                     detail: { latitude, longitude }
                                                 });
                                                 document.dispatchEvent(event);
+                                                
+                                                // Also update any fields with specific IDs or classes
+                                                // (common patterns for location input fields)
+                                                try {
+                                                    // Look for common field ID/name patterns for latitude
+                                                    const latFields = document.querySelectorAll(
+                                                        'input[id*="lat"], input[name*="lat"], ' +
+                                                        'input[id*="latitude"], input[name*="latitude"]'
+                                                    );
+                                                    
+                                                    // Look for common field ID/name patterns for longitude
+                                                    const lngFields = document.querySelectorAll(
+                                                        'input[id*="lng"], input[name*="lng"], ' +
+                                                        'input[id*="lon"], input[name*="lon"], ' +
+                                                        'input[id*="longitude"], input[name*="longitude"]'
+                                                    );
+                                                    
+                                                    // Update all latitude fields found
+                                                    latFields.forEach(field => {
+                                                        field.value = latitude;
+                                                        
+                                                        // Trigger change event for frameworks 
+                                                        const event = new Event('change', { bubbles: true });
+                                                        field.dispatchEvent(event);
+                                                        
+                                                        // Also trigger input event
+                                                        const inputEvent = new Event('input', { bubbles: true });
+                                                        field.dispatchEvent(inputEvent);
+                                                    });
+                                                    
+                                                    // Update all longitude fields found
+                                                    lngFields.forEach(field => {
+                                                        field.value = longitude;
+                                                        
+                                                        // Trigger change event for frameworks
+                                                        const event = new Event('change', { bubbles: true });
+                                                        field.dispatchEvent(event);
+                                                        
+                                                        // Also trigger input event
+                                                        const inputEvent = new Event('input', { bubbles: true });
+                                                        field.dispatchEvent(inputEvent);
+                                                    });
+                                                    
+                                                    // Also check for a single field that might contain both
+                                                    const locationFields = document.querySelectorAll(
+                                                        'input[id*="location"], input[name*="location"], ' +
+                                                        'textarea[id*="location"], textarea[name*="location"]'
+                                                    );
+                                                    
+                                                    locationFields.forEach(field => {
+                                                        field.value = latitude + ',' + longitude;
+                                                        
+                                                        // Trigger change event
+                                                        const event = new Event('change', { bubbles: true });
+                                                        field.dispatchEvent(event);
+                                                        
+                                                        // Also trigger input event
+                                                        const inputEvent = new Event('input', { bubbles: true });
+                                                        field.dispatchEvent(inputEvent);
+                                                    });
+                                                    
+                                                    console.log("Updated form fields with location data");
+                                                } catch (e) {
+                                                    console.error("Error updating location fields:", e);
+                                                }
+                                                
+                                                // Also populate HTML5 geolocation cache
+                                                // This makes navigator.geolocation.getCurrentPosition work without prompting
+                                                try {
+                                                    if (window._cachedPosition === undefined) {
+                                                        window._cachedPosition = {};
+                                                    }
+                                                    
+                                                    // Create a position object that mimics the geolocation API
+                                                    window._cachedPosition = {
+                                                        coords: {
+                                                            latitude: latitude,
+                                                            longitude: longitude,
+                                                            accuracy: 10,
+                                                            altitude: null,
+                                                            altitudeAccuracy: null,
+                                                            heading: null,
+                                                            speed: null
+                                                        },
+                                                        timestamp: Date.now()
+                                                    };
+                                                    
+                                                    // Override the geolocation API if it exists
+                                                    if (navigator.geolocation) {
+                                                        // Save the original method
+                                                        if (!window._originalGetCurrentPosition) {
+                                                            window._originalGetCurrentPosition = navigator.geolocation.getCurrentPosition;
+                                                        }
+                                                        
+                                                        // Override getCurrentPosition
+                                                        navigator.geolocation.getCurrentPosition = function(success, error, options) {
+                                                            // Just return our cached position
+                                                            if (window._cachedPosition) {
+                                                                success(window._cachedPosition);
+                                                            } else if (window._originalGetCurrentPosition) {
+                                                                // Fall back to original if needed
+                                                                window._originalGetCurrentPosition.call(navigator.geolocation, success, error, options);
+                                                            }
+                                                        };
+                                                        
+                                                        // Similarly for watchPosition
+                                                        if (!window._originalWatchPosition) {
+                                                            window._originalWatchPosition = navigator.geolocation.watchPosition;
+                                                            window._watchCallbacks = {};
+                                                            window._lastWatchId = 0;
+                                                        }
+                                                        
+                                                        // Override watchPosition
+                                                        navigator.geolocation.watchPosition = function(success, error, options) {
+                                                            const watchId = ++window._lastWatchId;
+                                                            
+                                                            // Store callback for future updates
+                                                            window._watchCallbacks[watchId] = success;
+                                                            
+                                                            // Immediately return the current position
+                                                            if (window._cachedPosition) {
+                                                                setTimeout(function() {
+                                                                    success(window._cachedPosition);
+                                                                }, 0);
+                                                            }
+                                                            
+                                                            return watchId;
+                                                        };
+                                                        
+                                                        // Update the clearWatch method
+                                                        navigator.geolocation.clearWatch = function(watchId) {
+                                                            delete window._watchCallbacks[watchId];
+                                                        };
+                                                        
+                                                        console.log("Overridden HTML5 geolocation API");
+                                                    }
+                                                } catch (e) {
+                                                    console.error("Error overriding geolocation:", e);
+                                                }
                                             };
+                                            
+                                            // Function for the page to request a location update
+                                            window.requestLocationFromApp = function() {
+                                                // Call the Android interface to request an update
+                                                window.HapticFeedback.requestLocationUpdate();
+                                            };
+                                            
+                                            // If page has a method to set up location tracking, call it
+                                            if (typeof setupLocationTracking === 'function') {
+                                                try {
+                                                    setupLocationTracking();
+                                                } catch (e) {
+                                                    console.error("Error in setupLocationTracking:", e);
+                                                }
+                                            }
+                                            
+                                            // Request initial location update
+                                            window.requestLocationFromApp();
+                                            
+                                            console.log("Location handling initialized");
                                         })();
                                     """.trimIndent(), null)
                                 }
@@ -775,15 +1213,18 @@ class MainActivity : ComponentActivity(), LocationListener {
 
                             loadUrl(url)
                         }
-                    }
-                )
 
-                // Show loading indicator
-                if (isLoading && !swipeRefreshState.isRefreshing) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.align(Alignment.Center)
-                    )
+                        // Add the WebView to SwipeRefreshLayout
+                        addView(webView)
+                    }
                 }
+            )
+
+            // Show loading indicator when loading but SwipeRefresh isn't showing
+            if (isLoading) {
+                CircularProgressIndicator(
+                    modifier = Modifier.align(Alignment.Center)
+                )
             }
         }
 
@@ -794,6 +1235,9 @@ class MainActivity : ComponentActivity(), LocationListener {
                 if (webView.canGoBack()) {
                     webView.goBack()
                 } else {
+                    // Before exiting the app, save cookies
+                    saveCookiesToPreferences()
+
                     // Can't go back further in WebView history, so exit the app
                     android.os.Process.killProcess(android.os.Process.myPid())
                 }

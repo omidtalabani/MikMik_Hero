@@ -2,11 +2,13 @@ package com.mikmik.hero
 
 import android.Manifest
 import android.app.AlertDialog
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -28,6 +30,7 @@ import com.mikmik.hero.ui.theme.MikMikDeliveryTheme
 
 class PermissionActivity : ComponentActivity() {
     private var permissionDialogShown = false
+    private var batteryOptimizationDialogShown = false
 
     // For requesting location permissions
     private val requestLocationPermissionsLauncher = registerForActivityResult(
@@ -59,8 +62,8 @@ class PermissionActivity : ComponentActivity() {
     private val requestNotificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted ->
-        // Regardless of notification permission, we can proceed to main activity
-        proceedToMainActivity()
+        // After notification permission is handled, check battery optimization
+        checkAndRequestBatteryOptimization()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -80,10 +83,22 @@ class PermissionActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
 
-        // When returning from Settings, check permissions again
+        // When returning from Settings for location permissions
         if (permissionDialogShown) {
             permissionDialogShown = false
             checkAndRequestLocationPermissions()
+        }
+
+        // When returning from battery optimization settings
+        if (batteryOptimizationDialogShown) {
+            batteryOptimizationDialogShown = false
+            // Check if battery optimization is now disabled
+            if (isBatteryOptimizationDisabled()) {
+                proceedToMainActivity()
+            } else {
+                // If still not disabled, ask again
+                checkAndRequestBatteryOptimization()
+            }
         }
     }
 
@@ -138,13 +153,75 @@ class PermissionActivity : ComponentActivity() {
                     .setCancelable(false)
                     .show()
             } else {
-                // Already granted, proceed
-                proceedToMainActivity()
+                // Already granted, proceed to battery optimization
+                checkAndRequestBatteryOptimization()
             }
         } else {
             // On Android 12 and below, no runtime permission needed
+            checkAndRequestBatteryOptimization()
+        }
+    }
+
+    private fun checkAndRequestBatteryOptimization() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            if (!isBatteryOptimizationDisabled()) {
+                showBatteryOptimizationDialog()
+            } else {
+                // Battery optimization already disabled, proceed
+                proceedToMainActivity()
+            }
+        } else {
+            // On earlier Android versions, no battery optimization settings
             proceedToMainActivity()
         }
+    }
+
+    private fun isBatteryOptimizationDisabled(): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+            return powerManager.isIgnoringBatteryOptimizations(packageName)
+        }
+        return true // On older versions, return true as there's no such optimization
+    }
+
+    private fun showBatteryOptimizationDialog() {
+        batteryOptimizationDialogShown = true
+        AlertDialog.Builder(this)
+            .setTitle("Battery Optimization")
+            .setMessage("To receive order notifications reliably, MikMik Hero needs to be exempt from battery optimization. Please tap 'Disable Optimization' and select 'All apps', find MikMik Hero, and select 'Don't optimize'.")
+            .setPositiveButton("Disable Optimization") { _, _ ->
+                try {
+                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = Uri.parse("package:$packageName")
+                    }
+                    startActivity(intent)
+                } catch (e: Exception) {
+                    // If direct intent fails, try the battery optimization settings screen
+                    try {
+                        val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                        startActivity(intent)
+                    } catch (e2: Exception) {
+                        // If that also fails, proceed anyway
+                        proceedToMainActivity()
+                    }
+                }
+            }
+            .setNegativeButton("Skip") { _, _ ->
+                // User chose to skip, proceed anyway but with a warning
+                AlertDialog.Builder(this)
+                    .setTitle("Warning")
+                    .setMessage("Without disabling battery optimization, you may not receive order notifications when the app is in the background or your device is idle. Are you sure you want to skip this step?")
+                    .setPositiveButton("Skip Anyway") { _, _ ->
+                        proceedToMainActivity()
+                    }
+                    .setNegativeButton("Go Back") { _, _ ->
+                        checkAndRequestBatteryOptimization()
+                    }
+                    .setCancelable(false)
+                    .show()
+            }
+            .setCancelable(false)
+            .show()
     }
 
     private fun requestBackgroundPermission() {
@@ -213,7 +290,7 @@ fun PermissionScreen(onRequestPermission: () -> Unit) {
             Spacer(modifier = Modifier.height(16.dp))
 
             Text(
-                text = "MikMik Hero needs location and notification permissions to track deliveries and alert you about new orders.",
+                text = "MikMik Hero needs location, notification, and battery optimization permissions to track deliveries and alert you about new orders.",
                 fontSize = 18.sp,
                 color = Color.White,
                 textAlign = TextAlign.Center
